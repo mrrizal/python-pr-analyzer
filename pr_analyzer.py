@@ -4,6 +4,7 @@ import json
 import requests
 import ast
 import asttokens
+from dotenv import load_dotenv
 from unidiff import PatchSet
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -295,6 +296,9 @@ class PRDiffAnalyzer:
         for file_data in files_data:
             added_lines = self.patch_parser.extract_added_lines(file_data.patch)
 
+            if not file_data.filename.endswith(".py"):
+                continue
+
             if not added_lines:
                 continue
 
@@ -308,7 +312,11 @@ class PRDiffAnalyzer:
         printed_funcs = set()
 
         for added_line in added_lines:
-            node = self.code_analyzer.get_enclosing_node(source_code, added_line.line_number)
+            try:
+                node = self.code_analyzer.get_enclosing_node(source_code, added_line.line_number)
+            except CodeAnalysisError:
+                continue
+
             if not node:
                 continue
 
@@ -323,9 +331,10 @@ class PRAnalyzerConfig:
     """Configuration class following SRP"""
 
     def __init__(self):
-        self.github_repo = "mrrizal/django-exercise"
-        self.pr_number = 1
-        self.files_json = "files.json"
+        self.github_repo = os.getenv("REPO")
+        self.organization_name = os.getenv("REPO").split("/")[0]
+        self.pr_number = os.getenv("PR_NUMBER")
+        self.files_json = f"{self.organization_name}.{self.github_repo.split("/")[1]}.{self.pr_number}_pr.json"
         self.github_token = os.getenv("GITHUB_KEY")
 
 
@@ -359,11 +368,12 @@ def main():
         os.remove(config.files_json)
     except GitHubAPIError as e:
         print(f"GitHub API Error: {e}")
-    except CodeAnalysisError as e:
-        print(f"Code Analysis Error: {e}")
-    except FileNotFoundError as e:
-        print(f"File Error: {e}")
+    # except CodeAnalysisError as e:
+    #     print(f"Code Analysis Error: {e}")
+    # except FileNotFoundError as e:
+    #     print(f"File Error: {e}")
 
 
 if __name__ == "__main__":
+    load_dotenv()
     main()
