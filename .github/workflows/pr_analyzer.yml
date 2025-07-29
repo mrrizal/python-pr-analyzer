@@ -1,0 +1,16 @@
+on:
+  workflow_call:
+    inputs:
+      repository:
+        required: true
+        type: string
+    secrets:
+      token:
+        required: true
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print repository name
+        run: echo "Repository is ${{ inputs.repository }}"
