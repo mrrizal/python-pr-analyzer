@@ -7,7 +7,7 @@ import asttokens
 from dotenv import load_dotenv
 from unidiff import PatchSet
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -25,6 +25,24 @@ class AddedLine:
     """Data class representing an added line with its line number"""
     line_number: int
     content: str
+
+
+@dataclass
+class FunctionChange:
+    """Data class representing a function with its added lines"""
+    function_name: str
+    function_code: str
+    function_start_line: int
+    function_end_line: int
+    added_lines: List[AddedLine]
+
+
+@dataclass
+class CodeBlock:
+    """Data class representing a code block with line numbers"""
+    code: str
+    start_line: int
+    end_line: int
 
 
 class GitHubAPIError(Exception):
@@ -233,6 +251,10 @@ class ICodeAnalyzer(ABC):
     def extract_node_source(self, source_code: str, node: ast.AST) -> Optional[str]:
         pass
 
+    @abstractmethod
+    def get_function_name(self, node: ast.AST) -> str:
+        pass
+
 
 class ASTCodeAnalyzer(ICodeAnalyzer):
     """AST-based code analyzer"""
@@ -264,6 +286,12 @@ class ASTCodeAnalyzer(ICodeAnalyzer):
         """Extract source code for a given AST node"""
         return ast.get_source_segment(source_code, node)
 
+    def get_function_name(self, node: ast.AST) -> str:
+        """Get the name of a function/class node"""
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return node.name
+        return "unknown"
+
 
 class PRDiffAnalyzer:
     """Main class for analyzing PR diffs following SRP"""
@@ -289,9 +317,10 @@ class PRDiffAnalyzer:
         files_data = self.patch_parser.parse_diff(diff_text, head_sha)
         self.file_storage.save_files_data(files_data, output_file)
 
-    def analyze_pr_changes(self, files_data_path: str, repo: str) -> None:
-        """Analyze changes in PR and print normalized code"""
+    def analyze_pr_changes(self, files_data_path: str, repo: str) -> Dict[str, List[FunctionChange]]:
+        """Analyze changes in PR and return dict with functions and their added lines"""
         files_data = self.file_storage.load_files_data(files_data_path)
+        result = {}
 
         for file_data in files_data:
             added_lines = self.patch_parser.extract_added_lines(file_data.patch)
@@ -305,11 +334,18 @@ class PRDiffAnalyzer:
             print(f"\n## File: {file_data.filename}\n")
 
             source_code = self.github_client.get_raw_file(repo, file_data.sha, file_data.filename)
-            self._print_unique_functions(source_code, added_lines)
 
-    def _print_unique_functions(self, source_code: str, added_lines: List[AddedLine]) -> None:
-        """Print unique functions/classes that contain added lines"""
-        printed_funcs = set()
+            # Get functions with their added lines
+            function_changes = self._get_functions_with_added_lines(source_code, added_lines)
+
+            # Add to result dict
+            result[file_data.filename] = function_changes
+
+        return result
+
+    def _get_functions_with_added_lines(self, source_code: str, added_lines: List[AddedLine]) -> List[FunctionChange]:
+        """Get functions that contain added lines with mapping"""
+        function_changes = {}
 
         for added_line in added_lines:
             try:
@@ -320,11 +356,27 @@ class PRDiffAnalyzer:
             if not node:
                 continue
 
-            src = self.code_analyzer.extract_node_source(source_code, node)
-            if src and src not in printed_funcs:
-                printed_funcs.add(src)
-                print(src)
-                print("===")
+            function_name = self.code_analyzer.get_function_name(node)
+            function_code = self.code_analyzer.extract_node_source(source_code, node)
+
+            if not function_code:
+                continue
+
+            # Create a unique key for each function (name + start line to handle duplicate names)
+            func_key = f"{function_name}_{node.lineno}"
+
+            if func_key not in function_changes:
+                function_changes[func_key] = FunctionChange(
+                    function_name=function_name,
+                    function_code=function_code,
+                    function_start_line=node.lineno,
+                    function_end_line=node.end_lineno,
+                    added_lines=[]
+                )
+
+            function_changes[func_key].added_lines.append(added_line)
+
+        return list(function_changes.values())
 
 
 class PRAnalyzerConfig:
@@ -335,7 +387,7 @@ class PRAnalyzerConfig:
         self.organization_name = os.getenv("REPO").split("/")[0]
         self.pr_number = os.getenv("PR_NUMBER")
         self.files_json = f"{self.organization_name}.{self.github_repo.split("/")[1]}.{self.pr_number}_pr.json"
-        self.github_token = os.getenv("GITHUB_KEY")
+        self.github_token = os.getenv("GITHUB_TOKEN")
 
 
 def main():
@@ -363,15 +415,32 @@ def main():
             config.files_json
         )
 
-        # Analyze changes
-        analyzer.analyze_pr_changes(config.files_json, config.github_repo)
+        # Analyze changes and get results
+        analysis_result = analyzer.analyze_pr_changes(config.files_json, config.github_repo)
+
+        # Print enhanced analysis result
+        print("\n=== ENHANCED ANALYSIS RESULT ===")
+        for filename, function_changes in analysis_result.items():
+            print(f"\nFile: {filename}")
+            for func_change in function_changes:
+                # Skip if only 1 added line and it's empty
+                if (len(func_change.added_lines) == 1 and
+                    not func_change.added_lines[0].content.strip()):
+                    continue
+
+                print(f"\n  Function: {func_change.function_name}")
+                print(f"  Location: Lines {func_change.function_start_line}-{func_change.function_end_line}")
+                print(f"  Added Lines: {[line.line_number for line in func_change.added_lines]}")
+                print(f"  Function Code:")
+                print("  " + "\n  ".join(func_change.function_code.split("\n")))
+                print(f"\n  Specific Added Lines:")
+                for added_line in func_change.added_lines:
+                    print(f"    Line {added_line.line_number}: {added_line.content.rstrip()}")
+                print("  " + "="*50)
+
         os.remove(config.files_json)
     except GitHubAPIError as e:
         print(f"GitHub API Error: {e}")
-    # except CodeAnalysisError as e:
-    #     print(f"Code Analysis Error: {e}")
-    # except FileNotFoundError as e:
-    #     print(f"File Error: {e}")
 
 
 if __name__ == "__main__":
