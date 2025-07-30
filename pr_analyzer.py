@@ -384,9 +384,11 @@ class PRAnalyzerConfig:
 
     def __init__(self):
         self.github_repo = os.getenv("REPO")
-        self.organization_name = os.getenv("REPO").split("/")[0]
+        repo_parts = self.github_repo.split("/")
+        self.organization_name = repo_parts[0]
+        self.repo_name = repo_parts[1]
         self.pr_number = os.getenv("PR_NUMBER")
-        self.files_json = f"{self.organization_name}.{self.github_repo.split("/")[1]}.{self.pr_number}_pr.json"
+        self.files_json = f"{self.organization_name}.{self.repo_name}.{self.pr_number}_pr.json"
         self.github_token = os.getenv("GITHUB_TOKEN")
 
 
