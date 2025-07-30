@@ -1,7 +1,9 @@
 from io import StringIO
 import os
 import json
+import asyncio
 import requests
+import aiohttp
 import ast
 import asttokens
 from dotenv import load_dotenv
@@ -342,8 +344,6 @@ class PRDiffAnalyzer:
             if not added_lines and not deleted_lines:
                 continue
 
-            print(f"\n## File: {file_data.filename}\n")
-
             try:
                 # Get current version of the file (after changes)
                 current_source_code = self.github_client.get_raw_file(repo, file_data.sha, file_data.filename)
@@ -458,13 +458,14 @@ class PRAnalyzerConfig:
         self.github_repo = os.getenv("REPO")
         repo_parts = self.github_repo.split("/")
         self.organization_name = repo_parts[0]
-        self.repo_name = repo_parts[1]
+        self.project_name = repo_parts[1]
         self.pr_number = os.getenv("PR_NUMBER")
-        self.files_json = f"{self.organization_name}.{self.repo_name}.{self.pr_number}_pr.json"
+        self.files_json = f"{self.organization_name}.{self.project_name}.{self.pr_number}_pr.json"
         self.github_token = os.getenv("GITHUB_TOKEN")
+        self.code_review_url = os.getenv("CODE_REVIEW_URL")
 
 
-def convert_analysis_to_dict(analysis_result: Dict[str, List[FunctionChange]], repo_name: str) -> Dict[str, Any]:
+def convert_analysis_to_dict(analysis_result: Dict[str, List[FunctionChange]], project_name: str) -> Dict[str, Any]:
     """
     Convert PR analysis result to a structured dictionary format
 
@@ -487,7 +488,8 @@ def convert_analysis_to_dict(analysis_result: Dict[str, List[FunctionChange]], r
             deleted_ranges = _group_consecutive_lines(func_change.deleted_lines, is_added=False)
 
             function_data = {
-                "project_name": repo_name,
+                "file_path": filename,
+                "project_name": project_name,
                 "function_name": func_change.function_name,
                 "function_location": {
                     "start_line": func_change.function_start_line,
@@ -627,7 +629,22 @@ def print_formatted_result(result_dict: Dict[str, Any]) -> None:
         print("\n")
 
 
-def main():
+async def request_code_review(config: PRAnalyzerConfig, payload: Dict[str, Any]) -> None:
+    """
+    Send code review request to an external service (e.g., LLM API)
+
+    Args:
+        payload: The structured data to send for code review
+    """
+    async with aiohttp.ClientSession() as session:
+        async with session.post(config.code_review_url, json=payload) as response:
+            if response.status != 200:
+                raise Exception(f"Failed to send code review request: {response.status}")
+            return await response.json()
+
+
+
+async def main():
     """Main function demonstrating usage"""
     config = PRAnalyzerConfig()
 
@@ -653,12 +670,20 @@ def main():
 
     # Analyze changes and get results
     analysis_result = analyzer.analyze_pr_changes(config.files_json, config.github_repo)
-    structured_result = convert_analysis_to_dict(analysis_result, config.repo_name)
-    json.dump(structured_result, open(f'testing_pr_{config.pr_number}.json', "w"), indent=2)
-    # print_formatted_result(structured_result)
-    os.remove(config.files_json)  # Clean up temporary file after analysis
+    structured_result = convert_analysis_to_dict(analysis_result, config.project_name)
+    os.remove(config.files_json)
+
+    payloads = []
+    for filename, functions in structured_result.items():
+        payloads.extend(functions)
+
+    async with aiohttp.ClientSession() as session:
+        tasks = [request_code_review(config, payload) for payload in payloads]
+        results = await asyncio.gather(*tasks)
+        for result in results:
+            print(f"Code review result: {result}")
 
 
 if __name__ == "__main__":
     load_dotenv()
-    main()
+    asyncio.run(main())
