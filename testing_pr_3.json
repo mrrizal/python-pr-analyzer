@@ -1,0 +1,41 @@
+{
+  "product_service/views.py": [
+    {
+      "project_name": "django-exercise",
+      "function_name": "list",
+      "function_location": {
+        "start_line": 18,
+        "end_line": 53
+      },
+      "full_function_code": "def list(self, request, *args, **kwargs):\n        queryset = self.filter_queryset(self.get_queryset())\n        self.serializer_class = ProductLimitVariantsSerializer\n\n        datetime_format = \"%d-%m-%YT%H:%M:%S\"\n        created_at_gte = request.GET.get('created_at_gte', None)\n        created_at_lte = request.GET.get('created_at_lte', None)\n\n        empty_result = {\n            \"next\": None,\n            \"previous\": None,\n            \"results\": []\n        }\n        if created_at_gte:\n            try:\n                created_at_gte = to_indonesia_timezone(\n                    f'{created_at_gte}T00:00:00', datetime_format)\n                queryset = queryset.filter(created_at__gte=created_at_gte)\n            except ValueError:\n                return Response(empty_result)\n\n        if created_at_lte:\n            try:\n                created_at_lte = to_indonesia_timezone(\n                    f'{created_at_lte}T23:59:59', datetime_format)\n                queryset = queryset.filter(created_at__lte=created_at_lte)\n            except ValueError:\n                return Response(empty_result)\n\n        page = self.paginate_queryset(queryset)\n        if page is not None:\n            serializer = self.get_serializer(page, many=True)\n            return self.get_paginated_response(serializer.data)\n\n        serializer = self.get_serializer(queryset, many=True)\n        return Response(serializer.data)",
+      "added_code": [],
+      "deleted_code": [
+        {
+          "start_line": 18,
+          "end_line": 29,
+          "code": "    def create(self, request, *args, **kwargs):\n        serializer = self.get_serializer(data=request.data)\n        serializer.is_valid(raise_exception=True)\n        self.perform_create(serializer)\n\n        n_variant = len(serializer.data['variants'])\n        message = f\"success create 1 product with {n_variant} variants\"\n        if n_variant <= 1:\n            message = f\"success create 1 product with {n_variant} variant\"\n\n        return Response({\"status\": STATUS_SUCCESS, \"message\": message}, status=201)\n",
+          "line_count": 12
+        }
+      ],
+      "summary": {
+        "total_added_lines": 0,
+        "total_deleted_lines": 12,
+        "added_line_numbers": [],
+        "deleted_line_numbers": [
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29
+        ]
+      }
+    }
+  ]
+}

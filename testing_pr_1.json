@@ -1,0 +1,108 @@
+{
+  "product_service/views.py": [
+    {
+      "project_name": "django-exercise",
+      "function_name": "filter_queryset_updated",
+      "function_location": {
+        "start_line": 30,
+        "end_line": 59
+      },
+      "full_function_code": "def filter_queryset_updated(self, request, queryset):\n        \"\"\"\n        Override this method to apply custom filtering logic.\n        \"\"\"\n        empty_result = {\n            \"next\": None,\n            \"previous\": None,\n            \"results\": []\n        }\n\n        datetime_format = \"%d-%m-%YT%H:%M:%S\"\n        created_at_gte = request.GET.get('created_at_gte', None)\n        created_at_lte = request.GET.get('created_at_lte', None)\n\n        if created_at_gte:\n            try:\n                created_at_gte = to_indonesia_timezone(\n                    f'{created_at_gte}T00:00:00', datetime_format)\n                queryset = queryset.filter(created_at__gte=created_at_gte)\n            except ValueError:\n                return Response(empty_result)\n\n        if created_at_lte:\n            try:\n                created_at_lte = to_indonesia_timezone(\n                    f'{created_at_lte}T23:59:59', datetime_format)\n                queryset = queryset.filter(created_at__lte=created_at_lte)\n            except ValueError:\n                return Response(empty_result)\n        return queryset",
+      "added_code": [
+        {
+          "start_line": 30,
+          "end_line": 38,
+          "code": "    def filter_queryset_updated(self, request, queryset):\n        \"\"\"\n        Override this method to apply custom filtering logic.\n        \"\"\"\n        empty_result = {\n            \"next\": None,\n            \"previous\": None,\n            \"results\": []\n        }",
+          "line_count": 9
+        },
+        {
+          "start_line": 44,
+          "end_line": 59,
+          "code": "        if created_at_gte:\n            try:\n                created_at_gte = to_indonesia_timezone(\n                    f'{created_at_gte}T00:00:00', datetime_format)\n                queryset = queryset.filter(created_at__gte=created_at_gte)\n            except ValueError:\n                return Response(empty_result)\n\n        if created_at_lte:\n            try:\n                created_at_lte = to_indonesia_timezone(\n                    f'{created_at_lte}T23:59:59', datetime_format)\n                queryset = queryset.filter(created_at__lte=created_at_lte)\n            except ValueError:\n                return Response(empty_result)\n        return queryset",
+          "line_count": 16
+        }
+      ],
+      "deleted_code": [
+        {
+          "start_line": 30,
+          "end_line": 32,
+          "code": "    def list(self, request, *args, **kwargs):\n        queryset = self.filter_queryset(self.get_queryset())\n        self.serializer_class = ProductLimitVariantsSerializer",
+          "line_count": 3
+        }
+      ],
+      "summary": {
+        "total_added_lines": 25,
+        "total_deleted_lines": 3,
+        "added_line_numbers": [
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59
+        ],
+        "deleted_line_numbers": [
+          30,
+          31,
+          32
+        ]
+      }
+    },
+    {
+      "project_name": "django-exercise",
+      "function_name": "list",
+      "function_location": {
+        "start_line": 61,
+        "end_line": 97
+      },
+      "full_function_code": "def list(self, request, *args, **kwargs):\n        queryset = self.filter_queryset(self.get_queryset())\n        self.serializer_class = ProductLimitVariantsSerializer\n\n        empty_result = {\n            \"next\": None,\n            \"previous\": None,\n            \"results\": []\n        }\n\n        datetime_format = \"%d-%m-%YT%H:%M:%S\"\n        created_at_gte = request.GET.get('created_at_gte', None)\n        created_at_lte = request.GET.get('created_at_lte', None)\n\n        if created_at_gte:\n            try:\n                created_at_gte = to_indonesia_timezone(\n                    f'{created_at_gte}T00:00:00', datetime_format)\n                queryset = queryset.filter(created_at__gte=created_at_gte)\n            except ValueError:\n                return Response(empty_result)\n\n        if created_at_lte:\n            try:\n                created_at_lte = to_indonesia_timezone(\n                    f'{created_at_lte}T23:59:59', datetime_format)\n                queryset = queryset.filter(created_at__lte=created_at_lte)\n            except ValueError:\n                return Response(empty_result)\n\n        page = self.paginate_queryset(queryset)\n        if page is not None:\n            serializer = self.get_serializer(page, many=True)\n            return self.get_paginated_response(serializer.data)\n\n        serializer = self.get_serializer(queryset, many=True)\n        return Response(serializer.data)",
+      "added_code": [
+        {
+          "start_line": 61,
+          "end_line": 61,
+          "code": "",
+          "line_count": 1
+        },
+        {
+          "start_line": 67,
+          "end_line": 71,
+          "code": "\n        datetime_format = \"%d-%m-%YT%H:%M:%S\"\n        created_at_gte = request.GET.get('created_at_gte', None)\n        created_at_lte = request.GET.get('created_at_lte', None)\n",
+          "line_count": 5
+        }
+      ],
+      "deleted_code": [],
+      "summary": {
+        "total_added_lines": 6,
+        "total_deleted_lines": 0,
+        "added_line_numbers": [
+          61,
+          67,
+          68,
+          69,
+          70,
+          71
+        ],
+        "deleted_line_numbers": []
+      }
+    }
+  ]
+}
