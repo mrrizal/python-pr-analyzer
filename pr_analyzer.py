@@ -7,8 +7,7 @@ import asttokens
 from dotenv import load_dotenv
 from unidiff import PatchSet
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
-from abc import ABC, abstractmethod
+from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
 
 
@@ -28,13 +27,30 @@ class AddedLine:
 
 
 @dataclass
+class DeletedLine:
+    """Data class representing a deleted line with its original line number"""
+    original_line_number: int
+    content: str
+
+
+@dataclass
 class FunctionChange:
-    """Data class representing a function with its added lines"""
+    """Data class representing a function with its added and deleted lines"""
     function_name: str
     function_code: str
     function_start_line: int
     function_end_line: int
     added_lines: List[AddedLine]
+    deleted_lines: List[DeletedLine]  # New field for deleted lines
+
+    @property
+    def has_changes(self) -> bool:
+        """Check if function has any meaningful changes"""
+        return (len(self.added_lines) > 0 or len(self.deleted_lines) > 0) and not (
+            len(self.added_lines) == 1 and
+            len(self.deleted_lines) == 0 and
+            not self.added_lines[0].content.strip()
+        )
 
 
 @dataclass
@@ -43,6 +59,15 @@ class CodeBlock:
     code: str
     start_line: int
     end_line: int
+
+
+@dataclass
+class CodeRange:
+    """Represents a range of code with start and end line numbers"""
+    start_line: int
+    end_line: int
+    code: str
+
 
 
 class GitHubAPIError(Exception):
@@ -55,23 +80,7 @@ class CodeAnalysisError(Exception):
     pass
 
 
-class IGitHubClient(ABC):
-    """Interface for GitHub API operations"""
-
-    @abstractmethod
-    def get_pr_diff(self, repo: str, pr_number: int) -> str:
-        pass
-
-    @abstractmethod
-    def get_pr_info(self, repo: str, pr_number: int) -> Dict:
-        pass
-
-    @abstractmethod
-    def get_raw_file(self, repo: str, commit_sha: str, filepath: str) -> str:
-        pass
-
-
-class GitHubClient(IGitHubClient):
+class GitHubClient:
     """GitHub API client implementation"""
 
     def __init__(self, token: Optional[str] = None):
@@ -110,27 +119,25 @@ class GitHubClient(IGitHubClient):
         return response.json()
 
     def get_raw_file(self, repo: str, commit_sha: str, filepath: str) -> str:
-        """Download raw file content from GitHub"""
+        """Download raw file content from GitHub (after changes)"""
         url = f"https://raw.githubusercontent.com/{repo}/{commit_sha}/{filepath}"
         headers = {"Accept": "application/vnd.github.v3.raw"}
 
         response = self._make_request(url, headers)
         return response.text
 
+    def get_raw_file_before_changes(self, repo: str, commit_sha: str, filepath: str) -> str:
+        """Download raw file content before changes (base commit)"""
+        # For simplicity, we'll use the parent commit. In a real implementation,
+        # you might want to get the actual base SHA from the PR info
+        url = f"https://raw.githubusercontent.com/{repo}/{commit_sha}~1/{filepath}"
+        headers = {"Accept": "application/vnd.github.v3.raw"}
 
-class IFileStorage(ABC):
-    """Interface for file storage operations"""
-
-    @abstractmethod
-    def save_files_data(self, data: List[FileData], filepath: str) -> None:
-        pass
-
-    @abstractmethod
-    def load_files_data(self, filepath: str) -> List[FileData]:
-        pass
+        response = self._make_request(url, headers)
+        return response.text
 
 
-class JSONFileStorage(IFileStorage):
+class JSONFileStorage:
     """JSON file storage implementation"""
 
     def save_files_data(self, data: List[FileData], filepath: str) -> None:
@@ -163,19 +170,7 @@ class JSONFileStorage(IFileStorage):
         ]
 
 
-class IPatchParser(ABC):
-    """Interface for patch parsing operations"""
-
-    @abstractmethod
-    def parse_diff(self, diff_text: str) -> List[FileData]:
-        pass
-
-    @abstractmethod
-    def extract_added_lines(self, patch: str) -> List[AddedLine]:
-        pass
-
-
-class UnidiffPatchParser(IPatchParser):
+class UnidiffPatchParser:
     """Patch parser using unidiff library"""
 
     def parse_diff(self, diff_text: str, head_sha: str) -> List[FileData]:
@@ -218,6 +213,23 @@ class UnidiffPatchParser(IPatchParser):
 
         return added_lines
 
+    def extract_deleted_lines(self, patch: str) -> List[DeletedLine]:
+        """Extract deleted lines from patch with original line numbers"""
+        deleted_lines = []
+        original_line_number = None
+
+        for line in patch.splitlines():
+            if line.startswith("@@"):
+                original_line_number = self._extract_original_start_line(line)
+            elif self._is_deleted_line(line) and original_line_number is not None:
+                raw_content = line[1:]
+                deleted_lines.append(DeletedLine(original_line_number, raw_content))
+                original_line_number += 1
+            elif not line.startswith("+") and original_line_number is not None:
+                original_line_number += 1
+
+        return deleted_lines
+
     def _get_removed_lines(self, patch: str) -> set:
         """Extract all removed lines to filter out moved code"""
         return {
@@ -226,12 +238,20 @@ class UnidiffPatchParser(IPatchParser):
         }
 
     def _extract_start_line(self, hunk_header: str) -> int:
-        """Extract starting line number from hunk header"""
+        """Extract starting line number from hunk header (for new file)"""
         parts = hunk_header.split(" ")
         for part in parts:
             if part.startswith("+"):
                 return int(part[1:].split(",")[0]) - 1
         return 0
+
+    def _extract_original_start_line(self, hunk_header: str) -> int:
+        """Extract starting line number from hunk header (for original file)"""
+        parts = hunk_header.split(" ")
+        for part in parts:
+            if part.startswith("-"):
+                return int(part[1:].split(",")[0])
+        return 1
 
     def _is_added_line(self, line: str) -> bool:
         """Check if line is an added line (not header)"""
@@ -239,24 +259,14 @@ class UnidiffPatchParser(IPatchParser):
                 not line.startswith("+++") and
                 not line.startswith("@@"))
 
-
-class ICodeAnalyzer(ABC):
-    """Interface for code analysis operations"""
-
-    @abstractmethod
-    def get_enclosing_node(self, source_code: str, target_line: int) -> Optional[ast.AST]:
-        pass
-
-    @abstractmethod
-    def extract_node_source(self, source_code: str, node: ast.AST) -> Optional[str]:
-        pass
-
-    @abstractmethod
-    def get_function_name(self, node: ast.AST) -> str:
-        pass
+    def _is_deleted_line(self, line: str) -> bool:
+        """Check if line is a deleted line (not header)"""
+        return (line.startswith("-") and
+                not line.startswith("---") and
+                not line.startswith("@@"))
 
 
-class ASTCodeAnalyzer(ICodeAnalyzer):
+class ASTCodeAnalyzer:
     """AST-based code analyzer"""
 
     def get_enclosing_node(self, source_code: str, target_line: int) -> Optional[ast.AST]:
@@ -298,10 +308,10 @@ class PRDiffAnalyzer:
 
     def __init__(
         self,
-        github_client: IGitHubClient,
-        file_storage: IFileStorage,
-        patch_parser: IPatchParser,
-        code_analyzer: ICodeAnalyzer
+        github_client: GitHubClient,
+        file_storage: JSONFileStorage,
+        patch_parser: UnidiffPatchParser,
+        code_analyzer: ASTCodeAnalyzer
     ):
         self.github_client = github_client
         self.file_storage = file_storage
@@ -318,38 +328,62 @@ class PRDiffAnalyzer:
         self.file_storage.save_files_data(files_data, output_file)
 
     def analyze_pr_changes(self, files_data_path: str, repo: str) -> Dict[str, List[FunctionChange]]:
-        """Analyze changes in PR and return dict with functions and their added lines"""
+        """Analyze changes in PR and return dict with functions and their added/deleted lines"""
         files_data = self.file_storage.load_files_data(files_data_path)
         result = {}
 
         for file_data in files_data:
             added_lines = self.patch_parser.extract_added_lines(file_data.patch)
+            deleted_lines = self.patch_parser.extract_deleted_lines(file_data.patch)
 
             if not file_data.filename.endswith(".py"):
                 continue
 
-            if not added_lines:
+            if not added_lines and not deleted_lines:
                 continue
 
             print(f"\n## File: {file_data.filename}\n")
 
-            source_code = self.github_client.get_raw_file(repo, file_data.sha, file_data.filename)
+            try:
+                # Get current version of the file (after changes)
+                current_source_code = self.github_client.get_raw_file(repo, file_data.sha, file_data.filename)
 
-            # Get functions with their added lines
-            function_changes = self._get_functions_with_added_lines(source_code, added_lines)
+                # Get previous version of the file (before changes) for deleted line analysis
+                previous_source_code = None
+                try:
+                    previous_source_code = self.github_client.get_raw_file_before_changes(repo, file_data.sha, file_data.filename)
+                except GitHubAPIError:
+                    # File might be new, so no previous version exists
+                    pass
 
-            # Add to result dict
-            result[file_data.filename] = function_changes
+                # Get functions with their added and deleted lines
+                function_changes = self._get_functions_with_changes(
+                    current_source_code, previous_source_code, added_lines, deleted_lines
+                )
+
+                # Add to result dict
+                result[file_data.filename] = function_changes
+
+            except GitHubAPIError as e:
+                print(f"Error fetching file content for {file_data.filename}: {e}")
+                continue
 
         return result
 
-    def _get_functions_with_added_lines(self, source_code: str, added_lines: List[AddedLine]) -> List[FunctionChange]:
-        """Get functions that contain added lines with mapping"""
+    def _get_functions_with_changes(
+        self,
+        current_source_code: str,
+        previous_source_code: Optional[str],
+        added_lines: List[AddedLine],
+        deleted_lines: List[DeletedLine]
+    ) -> List[FunctionChange]:
+        """Get functions that contain added or deleted lines with mapping"""
         function_changes = {}
 
+        # Process added lines using current source code
         for added_line in added_lines:
             try:
-                node = self.code_analyzer.get_enclosing_node(source_code, added_line.line_number)
+                node = self.code_analyzer.get_enclosing_node(current_source_code, added_line.line_number)
             except CodeAnalysisError:
                 continue
 
@@ -357,12 +391,12 @@ class PRDiffAnalyzer:
                 continue
 
             function_name = self.code_analyzer.get_function_name(node)
-            function_code = self.code_analyzer.extract_node_source(source_code, node)
+            function_code = self.code_analyzer.extract_node_source(current_source_code, node)
 
             if not function_code:
                 continue
 
-            # Create a unique key for each function (name + start line to handle duplicate names)
+            # Create a unique key for each function
             func_key = f"{function_name}_{node.lineno}"
 
             if func_key not in function_changes:
@@ -371,12 +405,50 @@ class PRDiffAnalyzer:
                     function_code=function_code,
                     function_start_line=node.lineno,
                     function_end_line=node.end_lineno,
-                    added_lines=[]
+                    added_lines=[],
+                    deleted_lines=[]
                 )
 
             function_changes[func_key].added_lines.append(added_line)
 
-        return list(function_changes.values())
+        # Process deleted lines using previous source code (if available)
+        if previous_source_code and deleted_lines:
+            for deleted_line in deleted_lines:
+                try:
+                    node = self.code_analyzer.get_enclosing_node(previous_source_code, deleted_line.original_line_number)
+                except CodeAnalysisError:
+                    continue
+
+                if not node:
+                    continue
+
+                function_name = self.code_analyzer.get_function_name(node)
+
+                # Try to match with existing function changes or create new one
+                matching_key = None
+                for key, func_change in function_changes.items():
+                    if func_change.function_name == function_name:
+                        matching_key = key
+                        break
+
+                if matching_key:
+                    function_changes[matching_key].deleted_lines.append(deleted_line)
+                else:
+                    # Create new function change for deleted-only functions
+                    function_code = self.code_analyzer.extract_node_source(previous_source_code, node)
+                    if function_code:
+                        func_key = f"{function_name}_{node.lineno}_deleted"
+                        function_changes[func_key] = FunctionChange(
+                            function_name=function_name,
+                            function_code=function_code,
+                            function_start_line=node.lineno,
+                            function_end_line=node.end_lineno,
+                            added_lines=[],
+                            deleted_lines=[deleted_line]
+                        )
+
+        # Filter out functions with no meaningful changes
+        return [func_change for func_change in function_changes.values() if func_change.has_changes]
 
 
 class PRAnalyzerConfig:
@@ -390,6 +462,168 @@ class PRAnalyzerConfig:
         self.pr_number = os.getenv("PR_NUMBER")
         self.files_json = f"{self.organization_name}.{self.repo_name}.{self.pr_number}_pr.json"
         self.github_token = os.getenv("GITHUB_TOKEN")
+
+
+def convert_analysis_to_dict(analysis_result: Dict[str, List[FunctionChange]]) -> Dict[str, Any]:
+    """
+    Convert PR analysis result to a structured dictionary format
+
+    Args:
+        analysis_result: The result from PRDiffAnalyzer.analyze_pr_changes()
+
+    Returns:
+        Dictionary with structured function changes information
+    """
+    result = {}
+
+    for filename, function_changes in analysis_result.items():
+        result[filename] = []
+
+        for func_change in function_changes:
+            # Process added lines to group consecutive lines
+            added_ranges = _group_consecutive_lines(func_change.added_lines, is_added=True)
+
+            # Process deleted lines to group consecutive lines
+            deleted_ranges = _group_consecutive_lines(func_change.deleted_lines, is_added=False)
+
+            function_data = {
+                "function_name": func_change.function_name,
+                "function_location": {
+                    "start_line": func_change.function_start_line,
+                    "end_line": func_change.function_end_line
+                },
+                "full_function_code": func_change.function_code,
+                "added_code": added_ranges,
+                "deleted_code": deleted_ranges,
+                "summary": {
+                    "total_added_lines": len(func_change.added_lines),
+                    "total_deleted_lines": len(func_change.deleted_lines),
+                    "added_line_numbers": [line.line_number for line in func_change.added_lines],
+                    "deleted_line_numbers": [line.original_line_number for line in func_change.deleted_lines]
+                }
+            }
+
+            result[filename].append(function_data)
+
+    return result
+
+
+def _group_consecutive_lines(lines: List, is_added: bool = True) -> List[Dict[str, Any]]:
+    """
+    Group consecutive lines into ranges and return structured data
+
+    Args:
+        lines: List of AddedLine or DeletedLine objects
+        is_added: True for added lines, False for deleted lines
+
+    Returns:
+        List of dictionaries with line ranges and code
+    """
+    if not lines:
+        return []
+
+    # Sort lines by line number
+    if is_added:
+        sorted_lines = sorted(lines, key=lambda x: x.line_number)
+        get_line_num = lambda x: x.line_number
+    else:
+        sorted_lines = sorted(lines, key=lambda x: x.original_line_number)
+        get_line_num = lambda x: x.original_line_number
+
+    ranges = []
+    current_range = {
+        "start_line": get_line_num(sorted_lines[0]),
+        "end_line": get_line_num(sorted_lines[0]),
+        "code": sorted_lines[0].content,
+        "line_count": 1
+    }
+
+    for i in range(1, len(sorted_lines)):
+        current_line_num = get_line_num(sorted_lines[i])
+
+        # Check if this line is consecutive to the previous one
+        if current_line_num == current_range["end_line"] + 1:
+            # Extend current range
+            current_range["end_line"] = current_line_num
+            current_range["code"] += "\n" + sorted_lines[i].content
+            current_range["line_count"] += 1
+        else:
+            # Start new range
+            ranges.append(current_range)
+            current_range = {
+                "start_line": current_line_num,
+                "end_line": current_line_num,
+                "code": sorted_lines[i].content,
+                "line_count": 1
+            }
+
+    # Don't forget the last range
+    ranges.append(current_range)
+
+    return ranges
+
+
+def print_formatted_result(result_dict: Dict[str, Any]) -> None:
+    """
+    Print the dictionary result in a formatted way
+
+    Args:
+        result_dict: The structured dictionary from convert_analysis_to_dict()
+    """
+    print("=== FORMATTED PR ANALYSIS RESULT ===\n")
+
+    for filename, functions in result_dict.items():
+        print(f"📁 File: {filename}")
+        print("=" * 80)
+
+        for i, func_data in enumerate(functions, 1):
+            print(f"\n🔧 Function #{i}: {func_data['function_name']}")
+            print(f"📍 Location: Lines {func_data['function_location']['start_line']}-{func_data['function_location']['end_line']}")
+
+            # Summary
+            summary = func_data['summary']
+            print(f"📊 Summary: +{summary['total_added_lines']} lines, -{summary['total_deleted_lines']} lines")
+
+            # Added code ranges
+            if func_data['added_code']:
+                print(f"\n✅ Added Code ({len(func_data['added_code'])} ranges):")
+                for j, added_range in enumerate(func_data['added_code'], 1):
+                    if added_range['start_line'] == added_range['end_line']:
+                        print(f"  Range #{j}: Line {added_range['start_line']}")
+                    else:
+                        print(f"  Range #{j}: Lines {added_range['start_line']}-{added_range['end_line']}")
+                    print(f"  Code:")
+                    for line in added_range['code'].split('\n'):
+                        print(f"    + {line}")
+
+            # Deleted code ranges
+            if func_data['deleted_code']:
+                print(f"\n❌ Deleted Code ({len(func_data['deleted_code'])} ranges):")
+                for j, deleted_range in enumerate(func_data['deleted_code'], 1):
+                    if deleted_range['start_line'] == deleted_range['end_line']:
+                        print(f"  Range #{j}: Line {deleted_range['start_line']}")
+                    else:
+                        print(f"  Range #{j}: Lines {deleted_range['start_line']}-{deleted_range['end_line']}")
+                    print(f"  Code:")
+                    for line in deleted_range['code'].split('\n'):
+                        print(f"    - {line}")
+
+            # Full function code (truncated for display)
+            print(f"\n📋 Full Function Code:")
+            function_lines = func_data['full_function_code'].split('\n')
+            if len(function_lines) > 10:
+                for line in function_lines[:5]:
+                    print(f"    {line}")
+                print(f"    ... ({len(function_lines) - 10} lines omitted) ...")
+                for line in function_lines[-5:]:
+                    print(f"    {line}")
+            else:
+                for line in function_lines:
+                    print(f"    {line}")
+
+            print("\n" + "-" * 60)
+
+        print("\n")
 
 
 def main():
@@ -409,40 +643,18 @@ def main():
         code_analyzer=code_analyzer
     )
 
-    try:
-        # Download and save PR data
-        analyzer.download_and_save_pr_data(
-            config.github_repo,
-            config.pr_number,
-            config.files_json
-        )
+    # Download and save PR data
+    analyzer.download_and_save_pr_data(
+        config.github_repo,
+        config.pr_number,
+        config.files_json
+    )
 
-        # Analyze changes and get results
-        analysis_result = analyzer.analyze_pr_changes(config.files_json, config.github_repo)
-
-        # Print enhanced analysis result
-        print("\n=== ENHANCED ANALYSIS RESULT ===")
-        for filename, function_changes in analysis_result.items():
-            print(f"\nFile: {filename}")
-            for func_change in function_changes:
-                # Skip if only 1 added line and it's empty
-                if (len(func_change.added_lines) == 1 and
-                    not func_change.added_lines[0].content.strip()):
-                    continue
-
-                print(f"\n  Function: {func_change.function_name}")
-                print(f"  Location: Lines {func_change.function_start_line}-{func_change.function_end_line}")
-                print(f"  Added Lines: {[line.line_number for line in func_change.added_lines]}")
-                print(f"  Function Code:")
-                print("  " + "\n  ".join(func_change.function_code.split("\n")))
-                print(f"\n  Specific Added Lines:")
-                for added_line in func_change.added_lines:
-                    print(f"    Line {added_line.line_number}: {added_line.content.rstrip()}")
-                print("  " + "="*50)
-
-        os.remove(config.files_json)
-    except GitHubAPIError as e:
-        print(f"GitHub API Error: {e}")
+    # Analyze changes and get results
+    analysis_result = analyzer.analyze_pr_changes(config.files_json, config.github_repo)
+    structured_result = convert_analysis_to_dict(analysis_result)
+    print_formatted_result(structured_result)
+    os.remove(config.files_json)  # Clean up temporary file after analysis
 
 
 if __name__ == "__main__":
