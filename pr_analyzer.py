@@ -678,10 +678,13 @@ async def main():
         payloads.extend(functions)
 
     async with aiohttp.ClientSession() as session:
-        tasks = [request_code_review(config, payload) for payload in payloads]
+        tasks = [request_code_review(config, payload) for payload in payloads[:1]]
         results = await asyncio.gather(*tasks)
         for result in results:
-            print(f"Code review result: {result}")
+            from pprint import pprint
+            print("Code review result:")
+            # print(result['style_review'])
+            print(result['duplication_review'])
 
 
 if __name__ == "__main__":
