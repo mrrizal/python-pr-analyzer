@@ -640,6 +640,9 @@ def construct_payload(payload, body, start_line, line):
         "start_line": start_line,
         "line": line
     }
+
+    if temp_payload["side"] == "LEFT":
+        del temp_payload["start_line"]
     return temp_payload
 
 
@@ -685,9 +688,10 @@ name: {similar_code["name"]}
                 body = summary_review
             else:
                 body = f"""
-{duplication_review}
-
 {summary_review}
+
+=================== DUPLICATION ANALYSIS ================
+{duplication_review}
 
 {reference_code}
                 """
@@ -768,7 +772,10 @@ async def main():
         review_results = await asyncio.gather(*code_review_tasks)
         comments_payload = build_comments_payload(payloads, review_results)
         submit_review_tasks = [submit_review(config, comment_payload) for comment_payload in comments_payload]
-        await asyncio.gather(*submit_review_tasks)
+        results = await asyncio.gather(*submit_review_tasks)
+        from pprint import pprint
+        pprint(results)
+
 
 if __name__ == "__main__":
     load_dotenv()
