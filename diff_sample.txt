@@ -1,0 +1,76 @@
+diff --git a/.github/workflows/pr-check.yml b/.github/workflows/pr-check.yml
+index aacd870..c8fce4f 100644
+--- a/.github/workflows/pr-check.yml
++++ b/.github/workflows/pr-check.yml
+@@ -31,3 +31,12 @@ jobs:
+       - name: Run tests
+         run: |
+           python manage.py test
++
++  code_review:
++    name: Code Review
++    uses: mrrizal/python-pr-analyzer/.github/workflows/pr_analyzer.yml@main
++    with:
++      repository: ${{ github.repository }}
++      pr_number: ${{ github.event.pull_request.number }}
++    secrets:
++      token: ${{ secrets.GITHUB_TOKEN }}
+diff --git a/product_service/views.py b/product_service/views.py
+index 86b8d4a..808530c 100644
+--- a/product_service/views.py
++++ b/product_service/views.py
+@@ -27,19 +27,51 @@ def create(self, request, *args, **kwargs):
+
+         return Response({"status": STATUS_SUCCESS, "message": message}, status=201)
+
+-    def list(self, request, *args, **kwargs):
+-        queryset = self.filter_queryset(self.get_queryset())
+-        self.serializer_class = ProductLimitVariantsSerializer
++    def filter_queryset_updated(self, request, queryset):
++        """
++        Override this method to apply custom filtering logic.
++        """
++        empty_result = {
++            "next": None,
++            "previous": None,
++            "results": []
++        }
+
+         datetime_format = "%d-%m-%YT%H:%M:%S"
+         created_at_gte = request.GET.get('created_at_gte', None)
+         created_at_lte = request.GET.get('created_at_lte', None)
+
++        if created_at_gte:
++            try:
++                created_at_gte = to_indonesia_timezone(
++                    f'{created_at_gte}T00:00:00', datetime_format)
++                queryset = queryset.filter(created_at__gte=created_at_gte)
++            except ValueError:
++                return Response(empty_result)
++
++        if created_at_lte:
++            try:
++                created_at_lte = to_indonesia_timezone(
++                    f'{created_at_lte}T23:59:59', datetime_format)
++                queryset = queryset.filter(created_at__lte=created_at_lte)
++            except ValueError:
++                return Response(empty_result)
++        return queryset
++
++    def list(self, request, *args, **kwargs):
++        queryset = self.filter_queryset(self.get_queryset())
++        self.serializer_class = ProductLimitVariantsSerializer
++
+         empty_result = {
+             "next": None,
+             "previous": None,
+             "results": []
+         }
++
++        datetime_format = "%d-%m-%YT%H:%M:%S"
++        created_at_gte = request.GET.get('created_at_gte', None)
++        created_at_lte = request.GET.get('created_at_lte', None)
++
+         if created_at_gte:
+             try:
+                 created_at_gte = to_indonesia_timezone(

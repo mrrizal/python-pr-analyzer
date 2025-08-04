@@ -44,6 +44,7 @@ class FunctionChange:
     function_end_line: int
     added_lines: List[AddedLine]
     deleted_lines: List[DeletedLine]  # New field for deleted lines
+    sha: str
 
     @property
     def has_changes(self) -> bool:
@@ -53,23 +54,6 @@ class FunctionChange:
             len(self.deleted_lines) == 0 and
             not self.added_lines[0].content.strip()
         )
-
-
-@dataclass
-class CodeBlock:
-    """Data class representing a code block with line numbers"""
-    code: str
-    start_line: int
-    end_line: int
-
-
-@dataclass
-class CodeRange:
-    """Represents a range of code with start and end line numbers"""
-    start_line: int
-    end_line: int
-    code: str
-
 
 
 class GitHubAPIError(Exception):
@@ -358,7 +342,7 @@ class PRDiffAnalyzer:
 
                 # Get functions with their added and deleted lines
                 function_changes = self._get_functions_with_changes(
-                    current_source_code, previous_source_code, added_lines, deleted_lines
+                    current_source_code, previous_source_code, added_lines, deleted_lines, file_data.sha
                 )
 
                 # Add to result dict
@@ -375,7 +359,8 @@ class PRDiffAnalyzer:
         current_source_code: str,
         previous_source_code: Optional[str],
         added_lines: List[AddedLine],
-        deleted_lines: List[DeletedLine]
+        deleted_lines: List[DeletedLine],
+        sha: str
     ) -> List[FunctionChange]:
         """Get functions that contain added or deleted lines with mapping"""
         function_changes = {}
@@ -406,7 +391,8 @@ class PRDiffAnalyzer:
                     function_start_line=node.lineno,
                     function_end_line=node.end_lineno,
                     added_lines=[],
-                    deleted_lines=[]
+                    deleted_lines=[],
+                    sha=sha
                 )
 
             function_changes[func_key].added_lines.append(added_line)
@@ -424,7 +410,7 @@ class PRDiffAnalyzer:
 
                 function_name = self.code_analyzer.get_function_name(node)
 
-                # Try to match with existing function changes or create new one
+                # Try to match with sting function changes or create new one
                 matching_key = None
                 for key, func_change in function_changes.items():
                     if func_change.function_name == function_name:
@@ -444,7 +430,8 @@ class PRDiffAnalyzer:
                             function_start_line=node.lineno,
                             function_end_line=node.end_lineno,
                             added_lines=[],
-                            deleted_lines=[deleted_line]
+                            deleted_lines=[deleted_line],
+                            sha=sha
                         )
 
         # Filter out functions with no meaningful changes
@@ -503,7 +490,8 @@ def convert_analysis_to_dict(analysis_result: Dict[str, List[FunctionChange]], p
                     "total_deleted_lines": len(func_change.deleted_lines),
                     "added_line_numbers": [line.line_number for line in func_change.added_lines],
                     "deleted_line_numbers": [line.original_line_number for line in func_change.deleted_lines]
-                }
+                },
+                "sha": func_change.sha
             }
 
             result[filename].append(function_data)
@@ -643,6 +631,43 @@ async def request_code_review(config: PRAnalyzerConfig, payload: Dict[str, Any])
             return await response.json()
 
 
+def build_comments_payload(payloads, review_results):
+    comments_payload = []
+    for payload, review_result in zip(payloads, review_results):
+        start_line = 0
+        line = 0
+        if len(payload["added_code"]) == 0:
+            start_line = payload["deleted_code"][0]["start_line"]
+            line = payload["deleted_code"][0]["end_line"]
+        else:
+            start_line = payload["added_code"][0]["start_line"]
+            line = payload["added_code"][0]["end_line"]
+
+        temp_payload = {
+            "body": review_result["summary"],
+            "commit_id": payload["sha"],
+            "path": payload["file_path"],
+            "side": "LEFT" if len(payload["added_code"]) == 0 else "RIGHT",
+            "start_line": start_line,
+            "line": line
+        }
+        if line == start_line:
+            del temp_payload["start_line"]
+        comments_payload.append(temp_payload)
+
+    return comments_payload
+
+
+async def submit_review(config: PRAnalyzerConfig, comment_payload: Dict):
+    url = f"https://api.github.com/repos/{config.github_repo}/pulls/{config.pr_number}/comments"
+    headers = {
+        "Authorization": f"Bearer {config.github_token}",
+        "Accept": "application/vnd.github+json"
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=comment_payload, headers=headers) as response:
+            return await response.json()
+
 
 async def main():
     """Main function demonstrating usage"""
@@ -671,20 +696,43 @@ async def main():
     # Analyze changes and get results
     analysis_result = analyzer.analyze_pr_changes(config.files_json, config.github_repo)
     structured_result = convert_analysis_to_dict(analysis_result, config.project_name)
-    os.remove(config.files_json)
 
     payloads = []
-    for filename, functions in structured_result.items():
-        payloads.extend(functions)
+    for _, functions in structured_result.items():
+        for function in functions:
+            for added_code in function["added_code"]:
+                if added_code["code"].strip() == "":
+                    continue
+                temp = dict(function)
+                temp["added_code"] = [added_code]
+                temp["deleted_code"] = []
+                payloads.append(temp)
 
-    async with aiohttp.ClientSession() as session:
-        tasks = [request_code_review(config, payload) for payload in payloads[:1]]
-        results = await asyncio.gather(*tasks)
-        for result in results:
-            from pprint import pprint
-            print("Code review result:")
-            # print(result['style_review'])
-            print(result['duplication_review'])
+            for deleted_code in function["deleted_code"]:
+                if deleted_code["code"].strip() == "":
+                    continue
+                temp = dict(function)
+                temp["deleted_code"] = [deleted_code]
+                temp["added_code"] = []
+                payloads.append(temp)
+
+    from pprint import pprint
+    pprint(payloads)
+    print(len(payloads))
+    exit(0)
+    async with aiohttp.ClientSession():
+        code_review_tasks = [request_code_review(config, payload) for payload in payloads]
+        review_results = await asyncio.gather(*code_review_tasks)
+        comments_payload = build_comments_payload(payloads, review_results)
+        from pprint import pprint
+        pprint(payloads)
+        pprint(review_results)
+        print(f"total payloads {len(payloads)}")
+        print(f"total review {len(review_results)}")
+        # submit_review_tasks = [submit_review(config, comment_payload) for comment_payload in comments_payload]
+        # results = await asyncio.gather(*submit_review_tasks)
+        # from pprint import pprint
+        # pprint(results)
 
 
 if __name__ == "__main__":
