@@ -659,7 +659,11 @@ def build_comments_payload(payloads, review_results):
         duplication_review = ""
         reference_code = ""
 
-        if len(review_result["reference"]) > 0 and "no duplication" not in review_result["duplication_review"].lower():
+        is_have_duplication_code = len(review_result["reference"]) > 0
+        is_have_duplication_review = "no duplication" not in review_result["duplication_review"].lower()
+        is_not_deleted_code = len(payload["added_code"]) > 0
+
+        if is_have_duplication_code and is_have_duplication_review and is_not_deleted_code:
             duplication_review = review_result["duplication_review"]
             for similar_code in review_result["reference"]:
                 similarity_score = float(similar_code["similarity"].strip('%'))
@@ -687,13 +691,16 @@ name: {similar_code["name"]}
 
 {reference_code}
                 """
-            temp_payload = construct_payload(
-                payload=payload,
-                body=body,
-                start_line=start_line,
-                line=line
-            )
-            comments_payload.append(temp_payload)
+        else:
+            body = summary_review
+
+        temp_payload = construct_payload(
+            payload=payload,
+            body=body,
+            start_line=start_line,
+            line=line
+        )
+        comments_payload.append(temp_payload)
 
     return comments_payload
 
