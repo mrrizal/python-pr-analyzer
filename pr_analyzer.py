@@ -631,6 +631,18 @@ async def request_code_review(config: PRAnalyzerConfig, payload: Dict[str, Any])
             return await response.json()
 
 
+def construct_payload(payload, body, start_line, line):
+    temp_payload = {
+        "body": body,
+        "commit_id": payload["sha"],
+        "path": payload["file_path"],
+        "side": "LEFT" if len(payload["added_code"]) == 0 else "RIGHT",
+        "start_line": start_line,
+        "line": line
+    }
+    return temp_payload
+
+
 def build_comments_payload(payloads, review_results):
     comments_payload = []
     for payload, review_result in zip(payloads, review_results):
@@ -643,17 +655,45 @@ def build_comments_payload(payloads, review_results):
             start_line = payload["added_code"][0]["start_line"]
             line = payload["added_code"][0]["end_line"]
 
-        temp_payload = {
-            "body": review_result["summary"],
-            "commit_id": payload["sha"],
-            "path": payload["file_path"],
-            "side": "LEFT" if len(payload["added_code"]) == 0 else "RIGHT",
-            "start_line": start_line,
-            "line": line
-        }
-        if line == start_line:
-            del temp_payload["start_line"]
-        comments_payload.append(temp_payload)
+        summary_review = review_result["summary"]
+        duplication_review = ""
+        reference_code = ""
+
+        if len(review_result["reference"]) > 0 and "no duplication" not in review_result["duplication_review"].lower():
+            duplication_review = review_result["duplication_review"]
+            for similar_code in review_result["reference"]:
+                similarity_score = float(similar_code["similarity"].strip('%'))
+                if similarity_score > 80.0:
+                    reference_code += f"""
+
+similar code:
+```
+{similar_code["code"]}
+```
+similarity score: {similarity_score}%
+file: {similar_code["file"]}
+name: {similar_code["name"]}
+
+
+                    """
+
+            if duplication_review.strip() == "":
+                body = summary_review
+            else:
+                body = f"""
+{duplication_review}
+
+{summary_review}
+
+{reference_code}
+                """
+            temp_payload = construct_payload(
+                payload=payload,
+                body=body,
+                start_line=start_line,
+                line=line
+            )
+            comments_payload.append(temp_payload)
 
     return comments_payload
 
@@ -716,24 +756,12 @@ async def main():
                 temp["added_code"] = []
                 payloads.append(temp)
 
-    from pprint import pprint
-    pprint(payloads)
-    print(len(payloads))
-    exit(0)
     async with aiohttp.ClientSession():
         code_review_tasks = [request_code_review(config, payload) for payload in payloads]
         review_results = await asyncio.gather(*code_review_tasks)
         comments_payload = build_comments_payload(payloads, review_results)
-        from pprint import pprint
-        pprint(payloads)
-        pprint(review_results)
-        print(f"total payloads {len(payloads)}")
-        print(f"total review {len(review_results)}")
-        # submit_review_tasks = [submit_review(config, comment_payload) for comment_payload in comments_payload]
-        # results = await asyncio.gather(*submit_review_tasks)
-        # from pprint import pprint
-        # pprint(results)
-
+        submit_review_tasks = [submit_review(config, comment_payload) for comment_payload in comments_payload]
+        await asyncio.gather(*submit_review_tasks)
 
 if __name__ == "__main__":
     load_dotenv()
