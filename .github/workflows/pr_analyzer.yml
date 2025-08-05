@@ -36,6 +36,7 @@ jobs:
           REPO: ${{ inputs.repository }}
           PR_NUMBER: ${{ inputs.pr_number }}
           GITHUB_TOKEN: ${{ secrets.token }}
+          CODE_REVIEW_URL: https://8c372c8a4249.ngrok-free.app/code-review
         run: |
           python pr_analyzer.py
 

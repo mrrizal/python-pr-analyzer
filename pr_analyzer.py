@@ -631,12 +631,12 @@ async def request_code_review(config: PRAnalyzerConfig, payload: Dict[str, Any])
             return await response.json()
 
 
-def construct_payload(payload, body, start_line, line):
+def construct_payload(payload, body, start_line, line, side):
     temp_payload = {
         "body": body,
         "commit_id": payload["sha"],
         "path": payload["file_path"],
-        "side": "LEFT" if len(payload["added_code"]) == 0 else "RIGHT",
+        "side": side,
         "start_line": start_line,
         "line": line
     }
@@ -658,7 +658,9 @@ def build_comments_payload(payloads, review_results):
             start_line = payload["added_code"][0]["start_line"]
             line = payload["added_code"][0]["end_line"]
 
-        summary_review = review_result["summary"]
+        side = "LEFT" if len(payload["added_code"]) == 0 else "RIGHT"
+
+        summary_review = review_result["summary"] if side == "RIGHT" else review_result["style_review"]
         duplication_review = ""
         reference_code = ""
 
@@ -702,7 +704,8 @@ name: {similar_code["name"]}
             payload=payload,
             body=body,
             start_line=start_line,
-            line=line
+            line=line,
+            side=side
         )
         comments_payload.append(temp_payload)
 
@@ -768,14 +771,15 @@ async def main():
                 payloads.append(temp)
 
     async with aiohttp.ClientSession():
+        print("Starting ...")
         code_review_tasks = [request_code_review(config, payload) for payload in payloads]
+        print("Reviewing code ...")
         review_results = await asyncio.gather(*code_review_tasks)
         comments_payload = build_comments_payload(payloads, review_results)
         submit_review_tasks = [submit_review(config, comment_payload) for comment_payload in comments_payload]
-        results = await asyncio.gather(*submit_review_tasks)
-        from pprint import pprint
-        pprint(results)
-
+        print("Commenting the pr ...")
+        await asyncio.gather(*submit_review_tasks)
+        print("Done.")
 
 if __name__ == "__main__":
     load_dotenv()
