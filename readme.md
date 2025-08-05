@@ -24,3 +24,36 @@ This project is intended to run automatically inside CI (GitHub Actions) and is 
 5. Sends the extracted code to your `auto-cepu` API endpoint.
 6. `auto-cepu` responds with **LLM-based review feedback** (issues, suggestions, severity ratings, duplication analysis, etc.).
 7. The analyzer automatically posts the review feedback as a reply to the pull request.
+
+---
+
+## Installation
+
+To enable LLM-powered code review in your repository, add the following job to your GitHub Actions workflow:
+
+```yaml
+name: PR Check
+
+on:
+  pull_request:
+    branches: ['*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  test:
+    ....
+
+  code_review:
+    name: Code Review
+    uses: mrrizal/python-pr-analyzer/.github/workflows/pr_analyzer.yml@main
+    with:
+      repository: ${{ github.repository }}
+      pr_number: ${{ github.event.pull_request.number }}
+    secrets:
+      token: ${{ secrets.GITHUB_TOKEN }}
+```
