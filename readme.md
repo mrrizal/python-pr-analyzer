@@ -27,6 +27,13 @@ This project is intended to run automatically inside CI (GitHub Actions) and is 
 
 ---
 
+## Requirements
+
+Before using this tool, make sure:
+
+- Your project uses Python and GitHub Actions.
+- You have an [`auto-cepu`](https://github.com/mrrizal/auto-cepu) instance running and accessible.
+
 ## Installation
 
 To enable LLM-powered code review in your repository, add the following job to your GitHub Actions workflow:
